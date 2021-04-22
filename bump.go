@@ -13,27 +13,39 @@ func (err *outOfMemoryError) Error() string {
 	return "out of memory"
 }
 
+type noPtrError struct {
+}
+
+func (err *noPtrError) Error() string {
+	return "invalid type, expected pointer"
+}
+
 // ErrOutOfMemory is used if a bump allocator runs out of space
 var ErrOutOfMemory error = &outOfMemoryError{}
 
-// memoryZeroer needs to be the size of the largest allocation you can make
-// its used to clear memory with copy()
-//
-// not an ideal approach to solve the problem
-var memoryZeroer = make([]byte, 4294967295)
+// ErrNotPtr is used if the incorrect type is used
+var ErrNotPtr error = &noPtrError{}
 
 type Allocator struct {
-	pos int32
+	pos uintptr
 	buf []byte
 }
 
 func New(buf []byte) *Allocator {
 	alloc := &Allocator{}
 	alloc.buf = buf
+	alloc.Reset()
 	return alloc
 }
 
 func (alloc *Allocator) Reset() {
+	// note(jae): 2021-04-21
+	// As of Go 1.16, doing "for i := 0; i < len(alloc.buf); i++" will cause Go to
+	// seemingly not optimize this to fast memset/memclr operations and Reset() will
+	// become *very very* slow
+	for i := range alloc.buf {
+		alloc.buf[i] = 0
+	}
 	alloc.pos = 0
 }
 
@@ -47,35 +59,6 @@ func (alloc *Allocator) Len() int {
 	return len(alloc.buf)
 }
 
-func (alloc *Allocator) New(v interface{}) interface{} {
-	// note(jae): 2021-04-20
-	// noescape() ensures the given "v" stays on the stack and doesn't escape
-	// to the heap where it will be allocated
-	eface := *(*reflectlite.InterfaceHeader)(noescape(unsafe.Pointer(&v)))
-	size := int32(eface.Type.Size)
-	{
-		kind := eface.Type.Kind & reflectlite.KindMask // reflect.TypeOf().Kind()
-		if kind == reflectlite.Ptr {
-			tt := (*reflectlite.PtrType)(unsafe.Pointer(eface.Type)) // reflect.TypeOf().Elem()
-			size = int32(tt.Elem.Size)
-		}
-	}
-	endSlice := alloc.pos + size
-	if int(endSlice) >= len(alloc.buf) {
-		panic(ErrOutOfMemory)
-	}
-	// clear memory, we use this instead of a for-loop for speed.
-	// In benchmarks we go from ~1700ns in "BenchmarkAlloc1000" to ~700ns
-	copy(alloc.buf[alloc.pos:endSlice], memoryZeroer)
-	r := reflectlite.InterfaceHeader{
-		Type: eface.Type,
-		Data: unsafe.Pointer(&alloc.buf[alloc.pos]),
-	}
-	alloc.pos += size
-	castR := *(*interface{})(unsafe.Pointer(&r))
-	return castR
-}
-
 // noescape hides a pointer from escape analysis. noescape is the identity
 // function but escape analysis doesn't think the output depends on the input.
 // noescape is inlined and currently compiles down to zero instructions.
@@ -87,4 +70,34 @@ func (alloc *Allocator) New(v interface{}) interface{} {
 func noescape(p unsafe.Pointer) unsafe.Pointer {
 	x := uintptr(p)
 	return unsafe.Pointer(x ^ 0)
+}
+
+// New will allocate data of the underlying type to the buffer and return a pointer
+// to it
+//
+// v := alloc.New(&MyStruct{}).(*MyStruct)
+//
+// Do not use this with pointers to slices or maps.
+func (alloc *Allocator) New(v interface{}) interface{} {
+	// note(jae): 2021-04-21
+	// this method is very sensitive to the Go inliner, so we have tests in "internal/inlinetest"
+	// to see if its inlined or not.
+
+	// note(jae): 2021-04-20
+	// noescape() ensures the given "v" stays on the stack and doesn't escape
+	// to the heap where it will be allocated
+	efaceType := (*(*reflectlite.InterfaceHeader)(noescape(unsafe.Pointer(&v)))).Type
+	if efaceType.Kind&reflectlite.KindMask != reflectlite.Ptr {
+		panic(ErrNotPtr)
+	}
+	size := (*reflectlite.PtrType)(unsafe.Pointer(efaceType)).Elem.Size // reflect.TypeOf().Elem()
+	if int(alloc.pos+size) >= len(alloc.buf) {
+		panic(ErrOutOfMemory)
+	}
+	r := reflectlite.InterfaceHeader{
+		Type: efaceType,
+		Data: unsafe.Pointer(&alloc.buf[alloc.pos]),
+	}
+	alloc.pos += size
+	return *(*interface{})(unsafe.Pointer(&r))
 }

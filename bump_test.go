@@ -20,12 +20,10 @@ func BenchmarkNativeAlloc1000(b *testing.B) {
 	for n := 0; n < b.N; n++ {
 		for i := 0; i < 100; i++ {
 			p1 = &Player{}
-			p1.X = 1 + n
-			p1.Y = 2 + n
-			p1.Width = 30 + n
-			p1.Height = 40 + n
 		}
 	}
+
+	_ = p1
 }
 
 // BenchmarkAlloc just tests out how things go with a naive allocator
@@ -38,16 +36,28 @@ func BenchmarkAlloc1000(b *testing.B) {
 	for n := 0; n < b.N; n++ {
 		for i := 0; i < 100; i++ {
 			p1 = alloc.New(&Player{}).(*Player)
-			p1.X = 1 + n
-			p1.Y = 2 + n
-			p1.Width = 30 + n
-			p1.Height = 40 + n
 		}
 		alloc.Reset()
 	}
+
+	_ = p1
 }
 
-func TestOutOfMemory(t *testing.T) {
+func TestNotPointerError(t *testing.T) {
+	defer func() {
+		hasNotPointerError := false
+		if r := recover(); r != nil {
+			hasNotPointerError = r == ErrNotPtr
+		}
+		if !hasNotPointerError {
+			t.Fatalf(`expected "not pointer" panic, as we gave a non-pointer type`)
+		}
+	}()
+	alloc := New(make([]byte, 100))
+	alloc.New(Player{})
+}
+
+func TestOutOfMemoryError(t *testing.T) {
 	defer func() {
 		hasOutOfMemoryError := false
 		if r := recover(); r != nil {

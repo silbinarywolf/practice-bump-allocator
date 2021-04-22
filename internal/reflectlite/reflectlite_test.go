@@ -17,7 +17,7 @@ type twoElementStruct struct {
 
 var structsToTest = []interface{}{
 	&oneElementStruct{},
-	//&twoElementStruct{},
+	&twoElementStruct{},
 }
 
 // TestValidity exists to ensure this package remains syncronized with upstream Go data layout changes

@@ -11,6 +11,7 @@ const (
 
 const (
 	Ptr uint8 = 22
+	//Struct uint8 = 25
 )
 
 // tflag is used by an rtype to signal what extra type information is
